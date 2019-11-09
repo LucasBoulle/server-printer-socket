@@ -1,89 +1,106 @@
 package com.company;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.Socket;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 
-class ClientHandler extends Thread
-{
-    private DateFormat forDate = new SimpleDateFormat("yyyy/MM/dd");
-    private DateFormat forTime = new SimpleDateFormat("hh:mm:ss");
-    final DataInputStream dis;
-    final DataOutputStream dos;
-    final Socket s;
+ class ClientHandler implements Runnable {
 
+     private final Socket clientSocket;
+     private final Server server;
+     private PrintWriter out = null;
+     private BufferedReader in = null;
+     private int selectedIndexPrinter;
 
-    // Constructor
-    public ClientHandler(Socket s, DataInputStream dis, DataOutputStream dos)
-    {
-        this.s = s;
-        this.dis = dis;
-        this.dos = dos;
+     public void setPrinting(boolean printing) {
+         isPrinting = printing;
+     }
+
+     private boolean isPrinting;
+     private boolean isPrinter;
+
+    public ClientHandler(Socket socket, Server server) {
+        this.clientSocket = socket;
+        this.server = server;
+        this.isPrinting = false;
+        this.isPrinter= false;
+    }
+
+    public void setPrinter(String message) throws IOException, InterruptedException {
+        boolean allPrinterInUse = true;
+        for (int i = 0 ; i < server.printerConnections.size() ; i++) {
+            ClientHandler printer = server.printerConnections.get(i);
+            if(!printer.isPrinting) {
+                this.out = new PrintWriter(printer.clientSocket.getOutputStream(), true);
+                this.in = new BufferedReader(new InputStreamReader(printer.clientSocket.getInputStream()));
+                server.printerConnections.get(i).setPrinting(true);
+                selectedIndexPrinter = i;
+                allPrinterInUse = false;
+            }
+        }
+        if (allPrinterInUse) {
+            server.messages.add(message);
+            writeMessage(message);
+        }
+    }
+
+    public void writeMessage (String message) throws InterruptedException, IOException {
+        setPrinter(message);
+        if (server.messages.size() > 0) {
+            int lastIndex = server.messages.size() - 1;
+            printMessage(server.messages.get(server.messages.size() - 1));
+            server.messages.remove(lastIndex);
+        } else {
+            printMessage(message);
+        }
+    }
+
+    private void printMessage(String message) throws InterruptedException {
+        out.println("Printing...");
+        Thread.sleep(500);
+        out.println("Printing requested text: \n" + message);
+        server.printerConnections.get(selectedIndexPrinter).setPrinting(false);
     }
 
     @Override
-    public void run()
-    {
-        String received;
-        String toreturn;
-        while (true)
-        {
-            try {
-
-                // Ask user what he wants
-                dos.writeUTF("What do you want?[Date | Time]..\n"+
-                        "Type Exit to terminate connection.");
-
-                // receive the answer from client
-                received = dis.readUTF();
-
-                if(received.equals("Exit"))
+    public void run() {
+        try (InputStream stream = clientSocket.getInputStream()) {
+            boolean ativo = true;
+            this.out = new PrintWriter(clientSocket.getOutputStream(), true);
+            this.in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+            while (ativo)
+            {
+                if (stream.available() != 0)
                 {
-                    System.out.println("Client " + this.s + " sends exit...");
-                    System.out.println("Closing this connection.");
-                    this.s.close();
-                    System.out.println("Connection closed");
-                    break;
+                    byte[] dados = new byte[stream.available()];
+                    stream.read(dados);
+                    String dadosLidos = new String(dados);
+                    if (dadosLidos.equals("/exit"))
+                        ativo = false;
+                    else if(dadosLidos.equals("/printer")) {
+                        out.println("\nClient added as printer");
+                        this.isPrinter = true;
+                        server.printerConnections.add(this);
+                    }
+                    else {
+                        writeMessage(new String(dados));
+                    }
                 }
-
-                // creating Date object
-                Date date = new Date();
-
-                // write on output stream based on the
-                // answer from the client
-                switch (received) {
-
-                    case "Date" :
-                        toreturn = forDate.format(date);
-                        dos.writeUTF(toreturn);
-                        break;
-
-                    case "Time" :
-                        toreturn = forTime.format(date);
-                        dos.writeUTF(toreturn);
-                        break;
-
-                    default:
-                        dos.writeUTF("Invalid input");
-                        break;
+                Thread.sleep(10);
+            }
+            System.out.println("Bye bye");
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                if (out != null) {
+                    out.close();
                 }
+                if (in != null)
+                    in.close();
+                clientSocket.close();
             } catch (IOException e) {
                 e.printStackTrace();
             }
-        }
-
-        try
-        {
-            // closing resources
-            this.dis.close();
-            this.dos.close();
-
-        }catch(IOException e){
-            e.printStackTrace();
         }
     }
 }
